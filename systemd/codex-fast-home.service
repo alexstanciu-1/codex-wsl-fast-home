@@ -1,0 +1,15 @@
+[Unit]
+Description=Bind mount Codex Desktop home onto WSL ext4
+After=local-fs.target
+ConditionPathIsDirectory=/mnt/c/Users
+
+[Service]
+Type=oneshot
+Environment=WIN_CODEX_HOME=/mnt/c/Users/alexv/.codex
+Environment=FAST_CODEX_HOME=/home/alexv/.codex-desktop-fast
+Environment=CODEX_OWNER_USER=alexv
+ExecStart=/usr/local/bin/codex-fast-home-mount
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
