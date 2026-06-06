@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+OWNER_USER="${CODEX_OWNER_USER:-${SUDO_USER:-$USER}}"
+WIN_CODEX_HOME="${WIN_CODEX_HOME:-/mnt/c/Users/${OWNER_USER}/.codex}"
+FAST_CODEX_HOME="${FAST_CODEX_HOME:-/home/${OWNER_USER}/.codex-desktop-fast}"
+OWNER_GROUP="$(id -gn "$OWNER_USER")"
+TASKKILL="${TASKKILL_EXE:-/mnt/c/Windows/System32/taskkill.exe}"
+
+log() {
+	echo "[codex-fast-home-reset] $*"
+}
+
+if [[ $EUID -ne 0 ]]; then
+	echo "codex-fast-home-reset must run as root." >&2
+	exit 1
+fi
+
+if [[ ! -d "$(dirname "$WIN_CODEX_HOME")" ]]; then
+	echo "Windows home is not mounted yet: $(dirname "$WIN_CODEX_HOME")" >&2
+	exit 1
+fi
+
+log "Stopping Codex.exe from Windows, if running..."
+if [[ -x "$TASKKILL" ]]; then
+	"$TASKKILL" /IM Codex.exe /F >/dev/null 2>&1 || true
+else
+	log "taskkill.exe not found or WSL interop is unavailable: $TASKKILL"
+fi
+
+log "Unmounting expected bind mounts, including stacked duplicates if present..."
+while mountpoint -q "$WIN_CODEX_HOME"; do
+	if findmnt -rn --target "$WIN_CODEX_HOME" -o SOURCE | grep -Fq "$FAST_CODEX_HOME"; then
+		umount "$WIN_CODEX_HOME"
+	else
+		echo "Refusing to unmount unexpected mount at $WIN_CODEX_HOME:" >&2
+		findmnt -T "$WIN_CODEX_HOME" >&2
+		exit 1
+	fi
+done
+
+log "Creating backups..."
+ts="$(date +%Y%m%d-%H%M%S)"
+BACKUP_DIR="/home/${OWNER_USER}/codex-backups"
+install -d -o "$OWNER_USER" -g "$OWNER_GROUP" -m 0755 "$BACKUP_DIR"
+
+if [[ -d "$WIN_CODEX_HOME" ]]; then
+	tar -C "$(dirname "$WIN_CODEX_HOME")" -czf "$BACKUP_DIR/windows-codex-$ts.tar.gz" "$(basename "$WIN_CODEX_HOME")"
+	chown "$OWNER_USER:$OWNER_GROUP" "$BACKUP_DIR/windows-codex-$ts.tar.gz"
+fi
+
+if [[ -d "$FAST_CODEX_HOME" ]]; then
+	tar -C "$(dirname "$FAST_CODEX_HOME")" -czf "$BACKUP_DIR/fast-codex-$ts.tar.gz" "$(basename "$FAST_CODEX_HOME")"
+	chown "$OWNER_USER:$OWNER_GROUP" "$BACKUP_DIR/fast-codex-$ts.tar.gz"
+fi
+
+log "Rebuilding fast mirror from real Windows .codex..."
+rm -rf "$FAST_CODEX_HOME"
+install -d -o "$OWNER_USER" -g "$OWNER_GROUP" -m 0775 "$FAST_CODEX_HOME"
+
+rsync -a --delete --chown="$OWNER_USER:$OWNER_GROUP" \
+	"$WIN_CODEX_HOME"/ \
+	"$FAST_CODEX_HOME"/
+
+log "Mounting fast mirror..."
+mount --bind "$FAST_CODEX_HOME" "$WIN_CODEX_HOME"
+
+log "Done:"
+findmnt -T "$WIN_CODEX_HOME" -o TARGET,SOURCE,FSTYPE
