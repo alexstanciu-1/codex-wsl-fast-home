@@ -17,6 +17,7 @@ if ! command -v rsync >/dev/null 2>&1; then
 fi
 
 install -m 0755 bin/codex-fast-home-mount /usr/local/bin/codex-fast-home-mount
+install -m 0755 bin/codex-fast-home-ensure /usr/local/bin/codex-fast-home-ensure
 install -m 0755 bin/codex-fast-home-reset /usr/local/bin/codex-fast-home-reset
 
 sed \
@@ -35,8 +36,15 @@ cat <<'MSG'
 
 Installed:
   /usr/local/bin/codex-fast-home-mount   # normal systemd/idempotent mount path
-  /usr/local/bin/codex-fast-home-reset   # manual recovery: taskkill, unmount, backup, rebuild, mount
+  /usr/local/bin/codex-fast-home-ensure  # preflight guard for startup races
+  /usr/local/bin/codex-fast-home-reset   # manual recovery: taskkill, unmount, backup, mount
+
+Preflight guard example:
+  codex-fast-home-ensure
 
 Manual recovery example:
   sudo codex-fast-home-reset
+
+Explicit Windows-side import example:
+  sudo codex-fast-home-reset --import-windows-additions
 MSG

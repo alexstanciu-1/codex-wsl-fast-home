@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE_NAME="${CODEX_FAST_HOME_SERVICE_NAME:-codex-fast-home.service}"
+SERVICE_FILE="${CODEX_FAST_HOME_SERVICE:-/etc/systemd/system/${SERVICE_NAME}}"
+TIMEOUT="${CODEX_FAST_HOME_TIMEOUT:-10}"
+
+service_env() {
+	local name="$1"
+	if [[ -r "$SERVICE_FILE" ]]; then
+		sed -n "s#^Environment=${name}=##p" "$SERVICE_FILE" | tail -n 1
+	fi
+}
+
+DEFAULT_OWNER_USER="${SUDO_USER:-$USER}"
+if [[ "$DEFAULT_OWNER_USER" == "root" ]]; then
+	DEFAULT_OWNER_USER="$(service_env CODEX_OWNER_USER)"
+fi
+
+OWNER_USER="${CODEX_OWNER_USER:-${DEFAULT_OWNER_USER:-$USER}}"
+WIN_CODEX_HOME="${WIN_CODEX_HOME:-$(service_env WIN_CODEX_HOME)}"
+FAST_CODEX_HOME="${FAST_CODEX_HOME:-$(service_env FAST_CODEX_HOME)}"
+WIN_CODEX_HOME="${WIN_CODEX_HOME:-/mnt/c/Users/${OWNER_USER}/.codex}"
+FAST_CODEX_HOME="${FAST_CODEX_HOME:-/home/${OWNER_USER}/.codex-desktop-fast}"
+
+log() {
+	echo "[codex-fast-home-ensure] $*"
+}
+
+usage() {
+	cat <<'USAGE'
+Usage: codex-fast-home-ensure [--timeout SECONDS]
+
+Verifies that the Codex Desktop WSL home path is bind-mounted from the fast
+ext4 store. If it is not mounted, this helper tries to start the systemd service
+and waits briefly for the mount to appear.
+
+Options:
+  --timeout SECONDS  Seconds to wait for the expected mount. Default: 10.
+  -h, --help         Show this help.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--timeout)
+			if [[ $# -lt 2 ]]; then
+				echo "--timeout requires a value." >&2
+				exit 2
+			fi
+			TIMEOUT="$2"
+			shift
+			;;
+		-h|--help)
+			usage
+			exit 0
+			;;
+		*)
+			echo "Unknown argument: $1" >&2
+			usage >&2
+			exit 2
+			;;
+	esac
+	shift
+done
+
+is_expected_mount() {
+	mountpoint -q "$WIN_CODEX_HOME" &&
+		findmnt -rn --target "$WIN_CODEX_HOME" -o SOURCE | grep -Fq "$FAST_CODEX_HOME"
+}
+
+if is_expected_mount; then
+	log "Expected mount is active: $FAST_CODEX_HOME -> $WIN_CODEX_HOME"
+	exit 0
+fi
+
+if mountpoint -q "$WIN_CODEX_HOME"; then
+	echo "Codex home is mounted from an unexpected source: $WIN_CODEX_HOME" >&2
+	findmnt -T "$WIN_CODEX_HOME" >&2
+	exit 1
+fi
+
+log "Expected mount is not active; attempting to start ${SERVICE_NAME}..."
+if [[ $EUID -eq 0 ]]; then
+	systemctl start "$SERVICE_NAME" 2>/dev/null || /usr/local/bin/codex-fast-home-mount
+else
+	systemctl start "$SERVICE_NAME" 2>/dev/null || true
+fi
+
+deadline=$((SECONDS + TIMEOUT))
+while (( SECONDS <= deadline )); do
+	if is_expected_mount; then
+		log "Expected mount is active: $FAST_CODEX_HOME -> $WIN_CODEX_HOME"
+		exit 0
+	fi
+	sleep 1
+done
+
+echo "Codex fast home mount is not active after ${TIMEOUT}s." >&2
+echo "Refusing to silently continue on the real Windows .codex path." >&2
+echo "Run: sudo systemctl start ${SERVICE_NAME}" >&2
+echo "Or:  sudo /usr/local/bin/codex-fast-home-mount" >&2
+exit 1

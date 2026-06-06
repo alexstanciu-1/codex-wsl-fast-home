@@ -1,15 +1,64 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OWNER_USER="${CODEX_OWNER_USER:-${SUDO_USER:-$USER}}"
+SERVICE_FILE="${CODEX_FAST_HOME_SERVICE:-/etc/systemd/system/codex-fast-home.service}"
+
+service_env() {
+	local name="$1"
+	if [[ -r "$SERVICE_FILE" ]]; then
+		sed -n "s#^Environment=${name}=##p" "$SERVICE_FILE" | tail -n 1
+	fi
+}
+
+DEFAULT_OWNER_USER="${SUDO_USER:-$USER}"
+if [[ "$DEFAULT_OWNER_USER" == "root" ]]; then
+	DEFAULT_OWNER_USER="$(service_env CODEX_OWNER_USER)"
+fi
+
+OWNER_USER="${CODEX_OWNER_USER:-${DEFAULT_OWNER_USER:-$USER}}"
+WIN_CODEX_HOME="${WIN_CODEX_HOME:-$(service_env WIN_CODEX_HOME)}"
+FAST_CODEX_HOME="${FAST_CODEX_HOME:-$(service_env FAST_CODEX_HOME)}"
 WIN_CODEX_HOME="${WIN_CODEX_HOME:-/mnt/c/Users/${OWNER_USER}/.codex}"
 FAST_CODEX_HOME="${FAST_CODEX_HOME:-/home/${OWNER_USER}/.codex-desktop-fast}"
 OWNER_GROUP="$(id -gn "$OWNER_USER")"
 TASKKILL="${TASKKILL_EXE:-/mnt/c/Windows/System32/taskkill.exe}"
+IMPORT_WINDOWS_ADDITIONS=0
 
 log() {
 	echo "[codex-fast-home-reset] $*"
 }
+
+usage() {
+	cat <<'USAGE'
+Usage: codex-fast-home-reset [--import-windows-additions]
+
+Stops Codex, unmounts expected bind mounts, backs up both stores, and remounts
+the fast ext4 store as primary.
+
+Options:
+  --import-windows-additions  After backups, copy Windows-side files that do not
+                              already exist in the fast store.
+  -h, --help                  Show this help.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--import-windows-additions)
+			IMPORT_WINDOWS_ADDITIONS=1
+			;;
+		-h|--help)
+			usage
+			exit 0
+			;;
+		*)
+			echo "Unknown argument: $1" >&2
+			usage >&2
+			exit 2
+			;;
+	esac
+	shift
+done
 
 if [[ $EUID -ne 0 ]]; then
 	echo "codex-fast-home-reset must run as root." >&2
@@ -54,13 +103,20 @@ if [[ -d "$FAST_CODEX_HOME" ]]; then
 	chown "$OWNER_USER:$OWNER_GROUP" "$BACKUP_DIR/fast-codex-$ts.tar.gz"
 fi
 
-log "Rebuilding fast mirror from real Windows .codex..."
-rm -rf "$FAST_CODEX_HOME"
 install -d -o "$OWNER_USER" -g "$OWNER_GROUP" -m 0775 "$FAST_CODEX_HOME"
 
-rsync -a --delete --chown="$OWNER_USER:$OWNER_GROUP" \
-	"$WIN_CODEX_HOME"/ \
-	"$FAST_CODEX_HOME"/
+if [[ "$IMPORT_WINDOWS_ADDITIONS" -eq 1 ]]; then
+	if find "$WIN_CODEX_HOME" -mindepth 1 -print -quit | grep -q .; then
+		log "Importing Windows .codex additions into fast mirror without overwriting..."
+		rsync -a --ignore-existing --chown="$OWNER_USER:$OWNER_GROUP" \
+			"$WIN_CODEX_HOME"/ \
+			"$FAST_CODEX_HOME"/
+	else
+		log "Windows .codex is empty; nothing to import."
+	fi
+else
+	log "Skipping Windows import. Use --import-windows-additions to merge missing Windows-side files."
+fi
 
 log "Mounting fast mirror..."
 mount --bind "$FAST_CODEX_HOME" "$WIN_CODEX_HOME"

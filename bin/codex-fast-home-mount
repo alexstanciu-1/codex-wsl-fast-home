@@ -1,7 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OWNER_USER="${CODEX_OWNER_USER:-${SUDO_USER:-$USER}}"
+SERVICE_FILE="${CODEX_FAST_HOME_SERVICE:-/etc/systemd/system/codex-fast-home.service}"
+
+service_env() {
+	local name="$1"
+	if [[ -r "$SERVICE_FILE" ]]; then
+		sed -n "s#^Environment=${name}=##p" "$SERVICE_FILE" | tail -n 1
+	fi
+}
+
+DEFAULT_OWNER_USER="${SUDO_USER:-$USER}"
+if [[ "$DEFAULT_OWNER_USER" == "root" ]]; then
+	DEFAULT_OWNER_USER="$(service_env CODEX_OWNER_USER)"
+fi
+
+OWNER_USER="${CODEX_OWNER_USER:-${DEFAULT_OWNER_USER:-$USER}}"
+WIN_CODEX_HOME="${WIN_CODEX_HOME:-$(service_env WIN_CODEX_HOME)}"
+FAST_CODEX_HOME="${FAST_CODEX_HOME:-$(service_env FAST_CODEX_HOME)}"
 WIN_CODEX_HOME="${WIN_CODEX_HOME:-/mnt/c/Users/${OWNER_USER}/.codex}"
 FAST_CODEX_HOME="${FAST_CODEX_HOME:-/home/${OWNER_USER}/.codex-desktop-fast}"
 OWNER_GROUP="$(id -gn "$OWNER_USER")"
@@ -36,11 +52,19 @@ if mountpoint -q "$WIN_CODEX_HOME"; then
 	exit 1
 fi
 
-# Keep Codex Desktop's changing WSL runtime/hash folders aligned before mounting.
-log "Syncing Windows .codex -> fast ext4 mirror..."
-rsync -a --delete --chown="$OWNER_USER:$OWNER_GROUP" \
-	"$WIN_CODEX_HOME"/ \
-	"$FAST_CODEX_HOME"/
+# Treat the ext4 mirror as the source of truth after the first import.
+if ! find "$FAST_CODEX_HOME" -mindepth 1 -print -quit | grep -q .; then
+	if find "$WIN_CODEX_HOME" -mindepth 1 -print -quit | grep -q .; then
+		log "Fast mirror is empty; importing initial Windows .codex contents..."
+		rsync -a --chown="$OWNER_USER:$OWNER_GROUP" \
+			"$WIN_CODEX_HOME"/ \
+			"$FAST_CODEX_HOME"/
+	else
+		log "Fast mirror and Windows .codex are empty; mounting empty fast mirror."
+	fi
+else
+	log "Fast mirror already has data; skipping Windows import."
+fi
 
 log "Bind mounting fast mirror..."
 mount --bind "$FAST_CODEX_HOME" "$WIN_CODEX_HOME"
