@@ -18,6 +18,18 @@ if [[ "$DEFAULT_OWNER_USER" == "root" ]]; then
 fi
 
 OWNER_USER="${CODEX_OWNER_USER:-${DEFAULT_OWNER_USER:-$USER}}"
+if [[ -z "$OWNER_USER" || "$OWNER_USER" == "root" ]]; then
+	cat >&2 <<'MSG'
+Refusing to use "root" as the Codex fast-home owner.
+
+Reinstall the service from your normal WSL user with:
+  sudo ./install.sh
+
+Or set CODEX_OWNER_USER=<wsl-user> when running this helper.
+MSG
+	exit 1
+fi
+
 WIN_CODEX_HOME="${WIN_CODEX_HOME:-$(service_env WIN_CODEX_HOME)}"
 FAST_CODEX_HOME="${FAST_CODEX_HOME:-$(service_env FAST_CODEX_HOME)}"
 WIN_CODEX_HOME="${WIN_CODEX_HOME:-/mnt/c/Users/${OWNER_USER}/.codex}"

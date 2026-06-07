@@ -6,7 +6,20 @@ if [[ $EUID -ne 0 ]]; then
 	exit 1
 fi
 
-TARGET_USER="${SUDO_USER:-${USER}}"
+TARGET_USER="${CODEX_OWNER_USER:-${SUDO_USER:-${USER:-}}}"
+if [[ -z "$TARGET_USER" || "$TARGET_USER" == "root" ]]; then
+	cat >&2 <<'MSG'
+Refusing to install codex-fast-home for user "root".
+
+Run the installer from your normal WSL user:
+  sudo ./install.sh
+
+If this shell really must run as root, pass the intended WSL owner explicitly:
+  sudo CODEX_OWNER_USER=<wsl-user> ./install.sh
+MSG
+	exit 1
+fi
+
 WIN_CODEX_HOME="${WIN_CODEX_HOME:-/mnt/c/Users/${TARGET_USER}/.codex}"
 FAST_CODEX_HOME="${FAST_CODEX_HOME:-/home/${TARGET_USER}/.codex-desktop-fast}"
 CODEX_OWNER_USER="${CODEX_OWNER_USER:-${TARGET_USER}}"
