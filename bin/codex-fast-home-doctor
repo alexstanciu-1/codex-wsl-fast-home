@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE_NAME="${CODEX_FAST_HOME_SERVICE_NAME:-codex-fast-home.service}"
+SERVICE_FILE="${CODEX_FAST_HOME_SERVICE:-/etc/systemd/system/${SERVICE_NAME}}"
+
+service_env() {
+	local name="$1"
+	if [[ -r "$SERVICE_FILE" ]]; then
+		sed -n "s#^Environment=${name}=##p" "$SERVICE_FILE" | tail -n 1
+	fi
+}
+
+DEFAULT_OWNER_USER="${SUDO_USER:-$USER}"
+if [[ "$DEFAULT_OWNER_USER" == "root" ]]; then
+	DEFAULT_OWNER_USER="$(service_env CODEX_OWNER_USER)"
+fi
+
+OWNER_USER="${CODEX_OWNER_USER:-${DEFAULT_OWNER_USER:-$USER}}"
+if [[ -z "$OWNER_USER" || "$OWNER_USER" == "root" ]]; then
+	cat >&2 <<'MSG'
+Refusing to use "root" as the Codex fast-home owner.
+
+Reinstall the service from your normal WSL user with:
+  sudo ./install.sh
+
+Or set CODEX_OWNER_USER=<wsl-user> when running this helper.
+MSG
+	exit 1
+fi
+
+WIN_CODEX_HOME="${WIN_CODEX_HOME:-$(service_env WIN_CODEX_HOME)}"
+FAST_CODEX_HOME="${FAST_CODEX_HOME:-$(service_env FAST_CODEX_HOME)}"
+WIN_CODEX_HOME="${WIN_CODEX_HOME:-/mnt/c/Users/${OWNER_USER}/.codex}"
+FAST_CODEX_HOME="${FAST_CODEX_HOME:-/home/${OWNER_USER}/.codex-desktop-fast}"
+REPAIR=0
+IMPORT_WINDOWS_ADDITIONS=0
+
+log() {
+	echo "[codex-fast-home-doctor] $*"
+}
+
+usage() {
+	cat <<'USAGE'
+Usage: codex-fast-home-doctor [--repair] [--import-windows-additions]
+
+Checks whether the Codex Desktop home path is served from the fast WSL ext4
+store and reports the recovery command when it is not.
+
+Options:
+  --repair                    Run codex-fast-home-reset when repair is needed.
+  --import-windows-additions  With --repair, merge Windows-side files that do not
+                              already exist in the fast store.
+  -h, --help                  Show this help.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--repair)
+			REPAIR=1
+			;;
+		--import-windows-additions)
+			IMPORT_WINDOWS_ADDITIONS=1
+			;;
+		-h|--help)
+			usage
+			exit 0
+			;;
+		*)
+			echo "Unknown argument: $1" >&2
+			usage >&2
+			exit 2
+			;;
+	esac
+	shift
+done
+
+is_expected_mount() {
+	mountpoint -q "$WIN_CODEX_HOME" &&
+		findmnt -rn --target "$WIN_CODEX_HOME" -o SOURCE | grep -Fq "$FAST_CODEX_HOME"
+}
+
+print_context() {
+	log "Owner user:       $OWNER_USER"
+	log "Windows .codex:   $WIN_CODEX_HOME"
+	log "Fast .codex:      $FAST_CODEX_HOME"
+	log "Service file:     $SERVICE_FILE"
+}
+
+needs_repair=0
+print_context
+
+if [[ ! -d "$(dirname "$WIN_CODEX_HOME")" ]]; then
+	log "FAIL: Windows home parent is not mounted: $(dirname "$WIN_CODEX_HOME")"
+	needs_repair=1
+elif is_expected_mount; then
+	log "OK: expected bind mount is active."
+elif mountpoint -q "$WIN_CODEX_HOME"; then
+	log "FAIL: Windows .codex is mounted from an unexpected source:"
+	findmnt -T "$WIN_CODEX_HOME"
+	needs_repair=1
+elif [[ -e "$WIN_CODEX_HOME" ]]; then
+	log "FAIL: Windows .codex is a real filesystem entry, not the expected bind mount."
+	needs_repair=1
+else
+	log "FAIL: Windows .codex does not exist yet."
+	needs_repair=1
+fi
+
+if [[ ! -d "$FAST_CODEX_HOME" ]]; then
+	log "WARN: fast store does not exist yet."
+	needs_repair=1
+elif ! find "$FAST_CODEX_HOME" -mindepth 1 -print -quit | grep -q .; then
+	log "WARN: fast store exists but is empty."
+fi
+
+if [[ ! -r "$SERVICE_FILE" ]]; then
+	log "WARN: service file is missing or unreadable: $SERVICE_FILE"
+	needs_repair=1
+elif command -v systemctl >/dev/null 2>&1; then
+	if ! systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
+		log "WARN: ${SERVICE_NAME} is not enabled."
+	fi
+fi
+
+if [[ "$needs_repair" -eq 0 ]]; then
+	log "Healthy."
+	exit 0
+fi
+
+if [[ "$REPAIR" -ne 1 ]]; then
+	log "Repair needed. Run:"
+	if [[ "$IMPORT_WINDOWS_ADDITIONS" -eq 1 ]]; then
+		echo "  sudo codex-fast-home-doctor --repair --import-windows-additions"
+	else
+		echo "  sudo codex-fast-home-doctor --repair"
+	fi
+	exit 1
+fi
+
+if [[ $EUID -ne 0 ]]; then
+	echo "Repair requires root. Run: sudo codex-fast-home-doctor --repair" >&2
+	exit 1
+fi
+
+reset_args=()
+if [[ "$IMPORT_WINDOWS_ADDITIONS" -eq 1 ]]; then
+	reset_args+=(--import-windows-additions)
+fi
+
+log "Running reset repair..."
+/usr/local/bin/codex-fast-home-reset "${reset_args[@]}"
+
+if is_expected_mount; then
+	log "Repair complete; expected bind mount is active."
+	exit 0
+fi
+
+echo "Repair finished, but expected mount is still not active." >&2
+findmnt -T "$WIN_CODEX_HOME" >&2 || true
+exit 1

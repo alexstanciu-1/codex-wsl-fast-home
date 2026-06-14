@@ -44,6 +44,7 @@ This patched version keeps the original idea but changes the operational behavio
 - `codex-fast-home-ensure` provides a preflight guard for startup races where Codex starts before the service finishes.
 - A separate `codex-fast-home-reset` tool performs deliberate recovery: stop `Codex.exe`, unmount expected bind mounts, back up both sides, and mount again.
 - `codex-fast-home-reset --import-windows-additions` explicitly imports Windows-side files that do not already exist in the fast mirror.
+- `codex-fast-home-doctor` checks for the common post-update failure mode where Codex recreated the real Windows `.codex` directory, and `codex-fast-home-doctor --repair` runs the reset workflow for you.
 
 ## Install
 
@@ -60,6 +61,7 @@ The installer:
 - Installs `bin/codex-fast-home-mount` to `/usr/local/bin`.
 - Installs `bin/codex-fast-home-ensure` to `/usr/local/bin`.
 - Installs `bin/codex-fast-home-reset` to `/usr/local/bin`.
+- Installs `bin/codex-fast-home-doctor` to `/usr/local/bin`.
 - Installs and enables `codex-fast-home.service`.
 - Creates `/home/<wsl-user>/.codex-desktop-fast`.
 - Imports the current Windows `.codex` contents only if the fast directory is empty.
@@ -122,6 +124,40 @@ sudo systemctl start codex-fast-home.service
 sudo /usr/local/bin/codex-fast-home-mount
 ```
 
+## Health check / self-repair
+
+Use the doctor after Codex Desktop updates, after WSL restarts, or whenever the
+app feels slow again:
+
+```bash
+codex-fast-home-doctor
+```
+
+The doctor checks:
+
+- The configured Windows and fast-store paths.
+- Whether `/mnt/c/Users/<windows-user>/.codex` is bind-mounted from the fast store.
+- Whether Codex or an update recreated the real Windows `.codex` directory.
+- Whether the fast store exists.
+- Whether the systemd service file is present and enabled.
+
+To repair the common post-update case in one command:
+
+```bash
+sudo codex-fast-home-doctor --repair
+```
+
+That runs the same careful reset flow: stop Codex, unmount only expected bind
+mounts, ensure both directories exist, back up both stores, and remount the fast
+store.
+
+If Codex created new Windows-side files while the mount was missing and you want
+to keep files that do not already exist in the fast store:
+
+```bash
+sudo codex-fast-home-doctor --repair --import-windows-additions
+```
+
 ## Manual recovery / reset
 
 Use this when Codex crashes or the bind mount needs to be cleaned up and reapplied:
@@ -135,8 +171,9 @@ The reset tool:
 1. Calls Windows `taskkill.exe /IM Codex.exe /F` if WSL interop is available.
 2. Unmounts only expected `FAST_CODEX_HOME -> WIN_CODEX_HOME` bind mounts, including stacked duplicates.
 3. Refuses to unmount unexpected mount sources.
-4. Backs up both the real Windows `.codex` and the fast mirror to `/home/<wsl-user>/codex-backups`.
-5. Mounts the fast mirror once.
+4. Recreates missing Windows and fast-store directories.
+5. Backs up both the real Windows `.codex` and the fast mirror to `/home/<wsl-user>/codex-backups`.
+6. Mounts the fast mirror once and verifies the result.
 
 To explicitly import files created on the Windows side while WSL was down:
 
@@ -154,6 +191,7 @@ Edit `systemd/codex-fast-home.service` if your Windows username differs from you
 sudo install -m 0755 bin/codex-fast-home-mount /usr/local/bin/codex-fast-home-mount
 sudo install -m 0755 bin/codex-fast-home-ensure /usr/local/bin/codex-fast-home-ensure
 sudo install -m 0755 bin/codex-fast-home-reset /usr/local/bin/codex-fast-home-reset
+sudo install -m 0755 bin/codex-fast-home-doctor /usr/local/bin/codex-fast-home-doctor
 sudo cp systemd/codex-fast-home.service /etc/systemd/system/codex-fast-home.service
 sudo systemctl daemon-reload
 sudo systemctl enable codex-fast-home.service
@@ -190,7 +228,9 @@ Then reopen WSL and run the `findmnt` verification command.
 sudo systemctl disable --now codex-fast-home.service
 sudo rm -f /etc/systemd/system/codex-fast-home.service
 sudo rm -f /usr/local/bin/codex-fast-home-mount
+sudo rm -f /usr/local/bin/codex-fast-home-ensure
 sudo rm -f /usr/local/bin/codex-fast-home-reset
+sudo rm -f /usr/local/bin/codex-fast-home-doctor
 sudo systemctl daemon-reload
 ```
 

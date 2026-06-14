@@ -44,8 +44,8 @@ usage() {
 	cat <<'USAGE'
 Usage: codex-fast-home-reset [--import-windows-additions]
 
-Stops Codex, unmounts expected bind mounts, backs up both stores, and remounts
-the fast ext4 store as primary.
+Stops Codex, unmounts expected bind mounts, recreates missing store
+directories, backs up both stores, and remounts the fast ext4 store as primary.
 
 Options:
   --import-windows-additions  After backups, copy Windows-side files that do not
@@ -100,6 +100,10 @@ while mountpoint -q "$WIN_CODEX_HOME"; do
 	fi
 done
 
+log "Ensuring store directories exist..."
+install -d -o "$OWNER_USER" -g "$OWNER_GROUP" -m 0775 "$FAST_CODEX_HOME"
+install -d -m 0775 "$WIN_CODEX_HOME"
+
 log "Creating backups..."
 ts="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="/home/${OWNER_USER}/codex-backups"
@@ -114,8 +118,6 @@ if [[ -d "$FAST_CODEX_HOME" ]]; then
 	tar -C "$(dirname "$FAST_CODEX_HOME")" -czf "$BACKUP_DIR/fast-codex-$ts.tar.gz" "$(basename "$FAST_CODEX_HOME")"
 	chown "$OWNER_USER:$OWNER_GROUP" "$BACKUP_DIR/fast-codex-$ts.tar.gz"
 fi
-
-install -d -o "$OWNER_USER" -g "$OWNER_GROUP" -m 0775 "$FAST_CODEX_HOME"
 
 if [[ "$IMPORT_WINDOWS_ADDITIONS" -eq 1 ]]; then
 	if find "$WIN_CODEX_HOME" -mindepth 1 -print -quit | grep -q .; then
@@ -133,5 +135,12 @@ fi
 log "Mounting fast mirror..."
 mount --bind "$FAST_CODEX_HOME" "$WIN_CODEX_HOME"
 
-log "Done:"
-findmnt -T "$WIN_CODEX_HOME" -o TARGET,SOURCE,FSTYPE
+if mountpoint -q "$WIN_CODEX_HOME" &&
+	findmnt -rn --target "$WIN_CODEX_HOME" -o SOURCE | grep -Fq "$FAST_CODEX_HOME"; then
+	log "Done:"
+	findmnt -T "$WIN_CODEX_HOME" -o TARGET,SOURCE,FSTYPE
+else
+	echo "Reset finished, but expected bind mount is not active." >&2
+	findmnt -T "$WIN_CODEX_HOME" >&2 || true
+	exit 1
+fi

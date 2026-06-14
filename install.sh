@@ -32,6 +32,7 @@ fi
 install -m 0755 bin/codex-fast-home-mount /usr/local/bin/codex-fast-home-mount
 install -m 0755 bin/codex-fast-home-ensure /usr/local/bin/codex-fast-home-ensure
 install -m 0755 bin/codex-fast-home-reset /usr/local/bin/codex-fast-home-reset
+install -m 0755 bin/codex-fast-home-doctor /usr/local/bin/codex-fast-home-doctor
 
 sed \
 	-e "s#^Environment=WIN_CODEX_HOME=.*#Environment=WIN_CODEX_HOME=${WIN_CODEX_HOME}#" \
@@ -50,10 +51,15 @@ cat <<'MSG'
 Installed:
   /usr/local/bin/codex-fast-home-mount   # normal systemd/idempotent mount path
   /usr/local/bin/codex-fast-home-ensure  # preflight guard for startup races
+  /usr/local/bin/codex-fast-home-doctor  # health check and optional repair
   /usr/local/bin/codex-fast-home-reset   # manual recovery: taskkill, unmount, backup, mount
 
 Preflight guard example:
   codex-fast-home-ensure
+
+Health check and self-repair example:
+  codex-fast-home-doctor
+  sudo codex-fast-home-doctor --repair
 
 Manual recovery example:
   sudo codex-fast-home-reset
