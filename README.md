@@ -147,9 +147,9 @@ To repair the common post-update case in one command:
 sudo codex-fast-home-doctor --repair
 ```
 
-That runs the same careful reset flow: stop Codex, unmount only expected bind
-mounts, ensure both directories exist, back up both stores, and remount the fast
-store.
+That runs the same careful reset flow even when the current mount looks healthy:
+stop Codex, unmount only expected bind mounts, ensure both directories exist,
+back up both stores, and remount the fast store.
 
 If Codex created new Windows-side files while the mount was missing and you want
 to keep files that do not already exist in the fast store:
