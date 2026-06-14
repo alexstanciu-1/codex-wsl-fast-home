@@ -45,6 +45,7 @@ This patched version keeps the original idea but changes the operational behavio
 - A separate `codex-fast-home-reset` tool performs deliberate recovery: stop `Codex.exe`, unmount expected bind mounts, back up both sides, and mount again.
 - `codex-fast-home-reset --import-windows-additions` explicitly imports Windows-side files that do not already exist in the fast mirror.
 - `codex-fast-home-doctor` checks for the common post-update failure mode where Codex recreated the real Windows `.codex` directory, and `codex-fast-home-doctor --repair` runs the reset workflow for you.
+- `codex-fast-home-windows` uses Windows PowerShell from WSL to enforce Codex Desktop's WSL agent setting and to check whether a known integrated-terminal setting is present.
 
 ## Install
 
@@ -62,10 +63,12 @@ The installer:
 - Installs `bin/codex-fast-home-ensure` to `/usr/local/bin`.
 - Installs `bin/codex-fast-home-reset` to `/usr/local/bin`.
 - Installs `bin/codex-fast-home-doctor` to `/usr/local/bin`.
+- Installs `bin/codex-fast-home-windows` to `/usr/local/bin`.
 - Installs and enables `codex-fast-home.service`.
 - Creates `/home/<wsl-user>/.codex-desktop-fast`.
 - Imports the current Windows `.codex` contents only if the fast directory is empty.
 - Bind-mounts the fast directory over `/mnt/c/Users/<windows-user>/.codex`.
+- Enforces `[desktop].runCodexInWindowsSubsystemForLinux = true` in the Windows Codex config, unless `CODEX_FAST_HOME_SKIP_WINDOWS_CONFIG=1` is set.
 
 If your Windows username is different from your WSL username, pass paths explicitly:
 
@@ -92,6 +95,44 @@ TARGET                         SOURCE                                      FSTYP
 ```
 
 If `FSTYPE` is `9p` or the source is `C:\`, the bind mount is not active.
+
+## Enforce Codex Desktop WSL mode
+
+For this workaround to help, Codex Desktop must run the agent in WSL. If the
+agent runs natively on Windows, the bind mount is irrelevant because Windows
+will use the real NTFS `%USERPROFILE%\.codex` directory.
+
+The Windows helper runs from WSL and calls Windows PowerShell when needed:
+
+```bash
+codex-fast-home-windows --check
+codex-fast-home-windows
+```
+
+It enforces this Windows Codex config setting:
+
+```toml
+[desktop]
+runCodexInWindowsSubsystemForLinux = true
+```
+
+To stop Codex after changing the setting, so the next launch picks it up:
+
+```bash
+codex-fast-home-windows --kill-codex
+```
+
+To stop and relaunch Codex when Windows can find `Codex.exe`:
+
+```bash
+codex-fast-home-windows --restart-codex
+```
+
+The helper also looks for known integrated-terminal keys and warns if it finds
+one that is not WSL. Current Codex builds may not persist the terminal choice in
+`config.toml` until the setting has been changed in the UI, so absence of that
+key is reported as a warning. If the app still opens PowerShell, set the
+integrated terminal to WSL in Codex Desktop Settings once.
 
 ## Startup race guard
 
@@ -140,6 +181,7 @@ The doctor checks:
 - Whether Codex or an update recreated the real Windows `.codex` directory.
 - Whether the fast store exists.
 - Whether the systemd service file is present and enabled.
+- Whether the Windows Codex config has WSL agent mode enabled.
 
 To repair the common post-update case in one command:
 
@@ -192,6 +234,7 @@ sudo install -m 0755 bin/codex-fast-home-mount /usr/local/bin/codex-fast-home-mo
 sudo install -m 0755 bin/codex-fast-home-ensure /usr/local/bin/codex-fast-home-ensure
 sudo install -m 0755 bin/codex-fast-home-reset /usr/local/bin/codex-fast-home-reset
 sudo install -m 0755 bin/codex-fast-home-doctor /usr/local/bin/codex-fast-home-doctor
+sudo install -m 0755 bin/codex-fast-home-windows /usr/local/bin/codex-fast-home-windows
 sudo cp systemd/codex-fast-home.service /etc/systemd/system/codex-fast-home.service
 sudo systemctl daemon-reload
 sudo systemctl enable codex-fast-home.service
@@ -231,6 +274,7 @@ sudo rm -f /usr/local/bin/codex-fast-home-mount
 sudo rm -f /usr/local/bin/codex-fast-home-ensure
 sudo rm -f /usr/local/bin/codex-fast-home-reset
 sudo rm -f /usr/local/bin/codex-fast-home-doctor
+sudo rm -f /usr/local/bin/codex-fast-home-windows
 sudo systemctl daemon-reload
 ```
 

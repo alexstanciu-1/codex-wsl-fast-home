@@ -33,6 +33,7 @@ install -m 0755 bin/codex-fast-home-mount /usr/local/bin/codex-fast-home-mount
 install -m 0755 bin/codex-fast-home-ensure /usr/local/bin/codex-fast-home-ensure
 install -m 0755 bin/codex-fast-home-reset /usr/local/bin/codex-fast-home-reset
 install -m 0755 bin/codex-fast-home-doctor /usr/local/bin/codex-fast-home-doctor
+install -m 0755 bin/codex-fast-home-windows /usr/local/bin/codex-fast-home-windows
 
 sed \
 	-e "s#^Environment=WIN_CODEX_HOME=.*#Environment=WIN_CODEX_HOME=${WIN_CODEX_HOME}#" \
@@ -46,6 +47,15 @@ systemctl start codex-fast-home.service
 systemctl status codex-fast-home.service --no-pager
 findmnt -T "$WIN_CODEX_HOME" -o TARGET,SOURCE,FSTYPE
 
+if [[ "${CODEX_FAST_HOME_SKIP_WINDOWS_CONFIG:-0}" != "1" ]]; then
+	echo
+	echo "Enforcing Codex Desktop WSL agent mode from Windows config..."
+	/usr/local/bin/codex-fast-home-windows --kill-codex
+else
+	echo
+	echo "Skipping Windows Codex Desktop config because CODEX_FAST_HOME_SKIP_WINDOWS_CONFIG=1."
+fi
+
 cat <<'MSG'
 
 Installed:
@@ -53,6 +63,7 @@ Installed:
   /usr/local/bin/codex-fast-home-ensure  # preflight guard for startup races
   /usr/local/bin/codex-fast-home-doctor  # health check and optional repair
   /usr/local/bin/codex-fast-home-reset   # manual recovery: taskkill, unmount, backup, mount
+  /usr/local/bin/codex-fast-home-windows # Windows-side Codex Desktop WSL-mode enforcer
 
 Preflight guard example:
   codex-fast-home-ensure
@@ -60,6 +71,10 @@ Preflight guard example:
 Health check and self-repair example:
   codex-fast-home-doctor
   sudo codex-fast-home-doctor --repair
+
+Windows Desktop WSL-mode check/enforce example:
+  codex-fast-home-windows --check
+  codex-fast-home-windows --restart-codex
 
 Manual recovery example:
   sudo codex-fast-home-reset

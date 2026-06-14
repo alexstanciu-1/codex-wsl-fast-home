@@ -3,6 +3,7 @@ set -euo pipefail
 
 SERVICE_NAME="${CODEX_FAST_HOME_SERVICE_NAME:-codex-fast-home.service}"
 SERVICE_FILE="${CODEX_FAST_HOME_SERVICE:-/etc/systemd/system/${SERVICE_NAME}}"
+CHECK_WINDOWS=1
 
 service_env() {
 	local name="$1"
@@ -51,6 +52,7 @@ Options:
   --repair                    Run codex-fast-home-reset when repair is needed.
   --import-windows-additions  With --repair, merge Windows-side files that do not
                               already exist in the fast store.
+  --no-windows-check          Skip Windows-side Codex Desktop WSL-mode checks.
   -h, --help                  Show this help.
 USAGE
 }
@@ -62,6 +64,9 @@ while [[ $# -gt 0 ]]; do
 			;;
 		--import-windows-additions)
 			IMPORT_WINDOWS_ADDITIONS=1
+			;;
+		--no-windows-check)
+			CHECK_WINDOWS=0
 			;;
 		-h|--help)
 			usage
@@ -124,6 +129,20 @@ elif command -v systemctl >/dev/null 2>&1; then
 	fi
 fi
 
+if [[ "$CHECK_WINDOWS" -eq 1 ]]; then
+	if command -v codex-fast-home-windows >/dev/null 2>&1; then
+		if codex-fast-home-windows --check; then
+			log "OK: Windows-side Codex Desktop WSL agent setting is enforced."
+		else
+			log "FAIL: Windows-side Codex Desktop WSL mode needs enforcement."
+			needs_repair=1
+		fi
+	else
+		log "WARN: codex-fast-home-windows is not installed; cannot check Desktop WSL mode."
+		needs_repair=1
+	fi
+fi
+
 if [[ "$needs_repair" -eq 0 && "$REPAIR" -ne 1 ]]; then
 	log "Healthy."
 	exit 0
@@ -155,6 +174,11 @@ fi
 
 log "Running reset repair..."
 /usr/local/bin/codex-fast-home-reset "${reset_args[@]}"
+
+if [[ "$CHECK_WINDOWS" -eq 1 && -x /usr/local/bin/codex-fast-home-windows ]]; then
+	log "Enforcing Windows-side Codex Desktop WSL agent mode..."
+	/usr/local/bin/codex-fast-home-windows --kill-codex
+fi
 
 if is_expected_mount; then
 	log "Repair complete; expected bind mount is active."

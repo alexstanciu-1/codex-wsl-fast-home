@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WIN_USER="${WIN_USER:-}"
+WIN_CODEX_CONFIG="${WIN_CODEX_CONFIG:-}"
+RESTART_CODEX=0
+KILL_CODEX=0
+CHECK_ONLY=0
+
+log() {
+	echo "[codex-fast-home-windows] $*"
+}
+
+usage() {
+	cat <<'USAGE'
+Usage: codex-fast-home-windows [--check] [--kill-codex] [--restart-codex]
+
+Configures the Windows-side Codex Desktop settings needed for the fast WSL
+home setup. This helper runs from WSL and uses powershell.exe when Windows
+state must be inspected or changed.
+
+Enforced:
+  - [desktop].runCodexInWindowsSubsystemForLinux = true
+
+Checked:
+  - wsl.exe is available on Windows
+  - the default WSL distribution responds
+  - known integrated-terminal settings, when present, point at WSL
+
+Options:
+  --check          Report current state without modifying config.
+  --kill-codex     Stop Codex.exe after changing settings.
+  --restart-codex  Stop and relaunch Codex.exe after changing settings.
+  -h, --help       Show this help.
+
+Environment:
+  WIN_USER            Windows username. Defaults to cmd.exe %USERNAME%.
+  WIN_CODEX_CONFIG    Windows path to config.toml. Defaults to
+                      C:\Users\<WIN_USER>\.codex\config.toml.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--check)
+			CHECK_ONLY=1
+			;;
+		--kill-codex)
+			KILL_CODEX=1
+			;;
+		--restart-codex)
+			RESTART_CODEX=1
+			KILL_CODEX=1
+			;;
+		-h|--help)
+			usage
+			exit 0
+			;;
+		*)
+			echo "Unknown argument: $1" >&2
+			usage >&2
+			exit 2
+			;;
+	esac
+	shift
+done
+
+POWERSHELL_EXE="${POWERSHELL_EXE:-}"
+CMD_EXE="${CMD_EXE:-}"
+
+if [[ -z "$POWERSHELL_EXE" ]]; then
+	if command -v powershell.exe >/dev/null 2>&1; then
+		POWERSHELL_EXE="$(command -v powershell.exe)"
+	elif [[ -x /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe ]]; then
+		POWERSHELL_EXE="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+	fi
+fi
+
+if [[ -z "$CMD_EXE" ]]; then
+	if command -v cmd.exe >/dev/null 2>&1; then
+		CMD_EXE="$(command -v cmd.exe)"
+	elif [[ -x /mnt/c/Windows/System32/cmd.exe ]]; then
+		CMD_EXE="/mnt/c/Windows/System32/cmd.exe"
+	fi
+fi
+
+if [[ -z "$POWERSHELL_EXE" ]]; then
+	echo "powershell.exe is not available. WSL interop is required." >&2
+	exit 1
+fi
+
+if [[ -z "$WIN_USER" ]]; then
+	if [[ -z "$CMD_EXE" ]]; then
+		echo "cmd.exe is not available. Set WIN_USER=<windows-user>." >&2
+		exit 1
+	fi
+	WIN_USER="$("$CMD_EXE" /C echo %USERNAME% 2>/dev/null | tr -d '\r')"
+fi
+
+if [[ -z "$WIN_USER" ]]; then
+	echo "Could not determine Windows username. Set WIN_USER=<windows-user>." >&2
+	exit 1
+fi
+
+if [[ -z "$WIN_CODEX_CONFIG" ]]; then
+	WIN_CODEX_CONFIG="C:\\Users\\${WIN_USER}\\.codex\\config.toml"
+elif [[ "$WIN_CODEX_CONFIG" == /mnt/* ]]; then
+	WIN_CODEX_CONFIG="$(wslpath -w "$WIN_CODEX_CONFIG" | tr -d '\r')"
+fi
+
+log "Windows user: $WIN_USER"
+log "Config path:  $WIN_CODEX_CONFIG"
+
+powershell_bool() {
+	if [[ "$1" -eq 1 ]]; then
+		printf 'true'
+	else
+		printf 'false'
+	fi
+}
+
+PS_SCRIPT_UNIX="/mnt/c/Users/${WIN_USER}/AppData/Local/Temp/codex-fast-home-windows-$$.ps1"
+PS_SCRIPT_WIN="C:\\Users\\${WIN_USER}\\AppData\\Local\\Temp\\codex-fast-home-windows-$$.ps1"
+trap 'rm -f "$PS_SCRIPT_UNIX"' EXIT
+
+cat > "$PS_SCRIPT_UNIX" <<'PS1'
+param(
+	[string]$ConfigPath,
+	[string]$CheckOnlyArg,
+	[string]$KillCodexArg,
+	[string]$RestartCodexArg
+)
+
+$ErrorActionPreference = "Stop"
+
+$CheckOnly = $CheckOnlyArg -eq "true"
+$KillCodex = $KillCodexArg -eq "true"
+$RestartCodex = $RestartCodexArg -eq "true"
+
+function Write-Step([string]$Message) {
+	Write-Host "[codex-fast-home-windows] $Message"
+}
+
+function Ensure-DesktopSetting {
+	param(
+		[string]$Text,
+		[string]$Key,
+		[string]$Value
+	)
+
+	$desktopHeader = "(?m)^\[desktop\]\s*$"
+	$keyPattern = "(?m)^(\s*" + [regex]::Escape($Key) + "\s*=\s*).*$"
+
+	if ($Text -match $desktopHeader) {
+		$desktopStart = $Text.IndexOf($Matches[0])
+		$nextHeaderMatch = [regex]::Match($Text.Substring($desktopStart + $Matches[0].Length), "(?m)^\[[^\r\n]+\]\s*$")
+		if ($nextHeaderMatch.Success) {
+			$desktopEnd = $desktopStart + $Matches[0].Length + $nextHeaderMatch.Index
+			$desktopBlock = $Text.Substring($desktopStart, $desktopEnd - $desktopStart)
+			if ($desktopBlock -match $keyPattern) {
+				$newBlock = [regex]::Replace($desktopBlock, $keyPattern, "`${1}$Value")
+			} else {
+				$newBlock = $desktopBlock.TrimEnd() + [Environment]::NewLine + "$Key = $Value" + [Environment]::NewLine
+			}
+			return $Text.Substring(0, $desktopStart) + $newBlock + $Text.Substring($desktopEnd)
+		}
+
+		$desktopBlock = $Text.Substring($desktopStart)
+		if ($desktopBlock -match $keyPattern) {
+			$newBlock = [regex]::Replace($desktopBlock, $keyPattern, "`${1}$Value")
+		} else {
+			$newBlock = $desktopBlock.TrimEnd() + [Environment]::NewLine + "$Key = $Value" + [Environment]::NewLine
+		}
+		return $Text.Substring(0, $desktopStart) + $newBlock
+	}
+
+	return $Text.TrimEnd() + [Environment]::NewLine + [Environment]::NewLine + "[desktop]" + [Environment]::NewLine + "$Key = $Value" + [Environment]::NewLine
+}
+
+function Get-CodexExe {
+	$commands = Get-Command Codex.exe -ErrorAction SilentlyContinue
+	if ($commands) {
+		return $commands[0].Source
+	}
+
+	$candidates = @(
+		"$env:LOCALAPPDATA\Microsoft\WindowsApps\Codex.exe",
+		"$env:LOCALAPPDATA\OpenAI\Codex\Codex.exe",
+		"$env:LOCALAPPDATA\Programs\Codex\Codex.exe"
+	)
+
+	foreach ($candidate in $candidates) {
+		if (Test-Path -LiteralPath $candidate) {
+			return $candidate
+		}
+	}
+
+	return $null
+}
+
+Write-Step "Checking wsl.exe..."
+$wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
+if (-not $wsl) {
+	throw "wsl.exe was not found on Windows PATH."
+}
+Write-Step "OK: $($wsl.Source)"
+
+$wslStatus = & wsl.exe --status 2>&1
+if ($LASTEXITCODE -ne 0) {
+	throw "wsl.exe --status failed: $wslStatus"
+}
+Write-Step "OK: wsl.exe --status works."
+
+if (-not (Test-Path -LiteralPath $ConfigPath)) {
+	if ($CheckOnly) {
+		Write-Step "FAIL: config.toml does not exist: $ConfigPath"
+		exit 1
+	}
+	$parent = Split-Path -Parent $ConfigPath
+	New-Item -ItemType Directory -Force -Path $parent | Out-Null
+	"[desktop]`r`nrunCodexInWindowsSubsystemForLinux = true`r`n" | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
+	Write-Step "Created config.toml with WSL agent mode enabled."
+} else {
+	$text = Get-Content -LiteralPath $ConfigPath -Raw
+	$agentEnabled = $text -match "(?m)^\s*runCodexInWindowsSubsystemForLinux\s*=\s*true\s*$"
+
+	if ($agentEnabled) {
+		Write-Step "OK: WSL agent mode is enabled."
+	} elseif ($CheckOnly) {
+		Write-Step "FAIL: WSL agent mode is not enabled."
+		exit 1
+	} else {
+		$backup = "$ConfigPath.bak-$(Get-Date -Format yyyyMMdd-HHmmss)"
+		Copy-Item -LiteralPath $ConfigPath -Destination $backup
+		$text = Ensure-DesktopSetting -Text $text -Key "runCodexInWindowsSubsystemForLinux" -Value "true"
+		Set-Content -LiteralPath $ConfigPath -Value $text -Encoding UTF8
+		Write-Step "Enabled WSL agent mode. Backup: $backup"
+	}
+}
+
+$text = Get-Content -LiteralPath $ConfigPath -Raw
+$terminalKeys = @(
+	"defaultIntegratedTerminal",
+	"integratedTerminal",
+	"integratedTerminalProfile",
+	"defaultTerminal",
+	"terminal"
+)
+$seenTerminalKey = $false
+foreach ($key in $terminalKeys) {
+	$match = [regex]::Match($text, "(?m)^\s*" + [regex]::Escape($key) + "\s*=\s*[""]?([^""\r\n]+)")
+	if ($match.Success) {
+		$seenTerminalKey = $true
+		$value = $match.Groups[1].Value.Trim()
+		if ($value -match "^(?i:wsl)$|(?i:windows subsystem for linux)") {
+			Write-Step "OK: terminal setting $key is $value."
+		} else {
+			Write-Step "WARN: terminal setting $key is $value, not WSL."
+		}
+	}
+}
+if (-not $seenTerminalKey) {
+	Write-Step "WARN: no known integrated-terminal config key was found. Set the Codex Desktop shell to WSL in Settings if the UI still opens PowerShell."
+}
+
+if ($KillCodex) {
+	Write-Step "Stopping Codex.exe..."
+	Stop-Process -Name Codex -Force -ErrorAction SilentlyContinue
+}
+
+if ($RestartCodex) {
+	$codexExe = Get-CodexExe
+	if (-not $codexExe) {
+		Write-Step "WARN: Codex.exe was stopped, but no relaunch path was found."
+		exit 0
+	}
+	Write-Step "Starting Codex.exe: $codexExe"
+	Start-Process -FilePath $codexExe
+}
+PS1
+
+"$POWERSHELL_EXE" -NoProfile -ExecutionPolicy Bypass -File "$PS_SCRIPT_WIN" \
+	-ConfigPath "$WIN_CODEX_CONFIG" \
+	-CheckOnlyArg "$(powershell_bool "$CHECK_ONLY")" \
+	-KillCodexArg "$(powershell_bool "$KILL_CODEX")" \
+	-RestartCodexArg "$(powershell_bool "$RESTART_CODEX")" | tr -d '\r'
