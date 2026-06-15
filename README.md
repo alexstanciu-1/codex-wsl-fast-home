@@ -200,6 +200,68 @@ to keep files that do not already exist in the fast store:
 sudo codex-fast-home-doctor --repair --import-windows-additions
 ```
 
+## Codex Desktop CLI path override
+
+After some Codex Desktop upgrades, the app may try to launch the wrong cached
+WSL Codex binary hash. If Desktop stops working in WSL mode and the bind mount
+is otherwise healthy, a useful temporary recovery is to point `CODEX_CLI_PATH`
+at the Codex Desktop-managed WSL cached binary.
+
+The important part is that `CODEX_CLI_PATH` should point to:
+
+```text
+%USERPROFILE%\.codex\bin\wsl\<cache-hash>\codex
+```
+
+It should not point to a Windows npm shim such as:
+
+```text
+C:\Program Files\nodejs\codex.cmd
+```
+
+It should also not point to a separately installed WSL CLI under `/home/...`.
+
+From Windows PowerShell, first find the Desktop-managed cached WSL binary:
+
+```powershell
+Get-ChildItem "$env:USERPROFILE\.codex\bin\wsl" -Recurse -File -Filter codex -ErrorAction SilentlyContinue |
+Select-Object FullName, Length, LastWriteTime
+```
+
+Then set `CODEX_CLI_PATH` to the returned `codex` path:
+
+```powershell
+$CodexWslPath = "$env:USERPROFILE\.codex\bin\wsl\<cache-hash>\codex"
+
+Test-Path $CodexWslPath
+
+[Environment]::SetEnvironmentVariable("CODEX_CLI_PATH", $CodexWslPath, "User")
+$env:CODEX_CLI_PATH = $CodexWslPath
+
+reg query HKCU\Environment /V CODEX_CLI_PATH
+```
+
+`Test-Path` should return `True`. After setting the override, close any running
+Codex processes and restart Codex Desktop:
+
+```powershell
+Get-Process | Where-Object {$_.ProcessName -like "*Codex*"} |
+Stop-Process -Force -ErrorAction SilentlyContinue
+```
+
+This override is a manual workaround. After an official Desktop fix is
+available, remove it so Codex Desktop can return to its normal managed path
+resolution:
+
+```powershell
+[Environment]::SetEnvironmentVariable("CODEX_CLI_PATH", $null, "User")
+Remove-Item Env:CODEX_CLI_PATH -ErrorAction SilentlyContinue
+reg query HKCU\Environment /V CODEX_CLI_PATH
+```
+
+If the final registry query reports that the value does not exist, the manual
+override has been removed.
+
 ## Manual recovery / reset
 
 Use this when Codex crashes or the bind mount needs to be cleaned up and reapplied:
