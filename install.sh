@@ -71,6 +71,8 @@ Preflight guard example:
 Health check and self-repair example:
   codex-fast-home-doctor
   sudo codex-fast-home-doctor --repair
+  # Also imports missing Desktop WSL cached binaries, chmods codex executables,
+  # and updates stale Desktop-managed CODEX_CLI_PATH values.
 
 Windows Desktop WSL-mode check/enforce example:
   codex-fast-home-windows --check

@@ -38,6 +38,18 @@ log() {
 	echo "[codex-fast-home-mount] $*"
 }
 
+chmod_desktop_wsl_bins() {
+	local target_bins="$FAST_CODEX_HOME/bin/wsl"
+
+	if [[ ! -d "$target_bins" ]]; then
+		return
+	fi
+
+	log "Ensuring Desktop-managed WSL codex binaries are executable..."
+	find "$target_bins" -type f -name codex -exec chmod 0755 {} +
+	chown -R "$OWNER_USER:$OWNER_GROUP" "$target_bins"
+}
+
 if [[ $EUID -ne 0 ]]; then
 	echo "codex-fast-home-mount must run as root." >&2
 	exit 1
@@ -77,6 +89,8 @@ if ! find "$FAST_CODEX_HOME" -mindepth 1 -print -quit | grep -q .; then
 else
 	log "Fast mirror already has data; skipping Windows import."
 fi
+
+chmod_desktop_wsl_bins
 
 log "Bind mounting fast mirror..."
 mount --bind "$FAST_CODEX_HOME" "$WIN_CODEX_HOME"

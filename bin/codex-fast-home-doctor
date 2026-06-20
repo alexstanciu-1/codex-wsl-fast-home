@@ -4,6 +4,7 @@ set -euo pipefail
 SERVICE_NAME="${CODEX_FAST_HOME_SERVICE_NAME:-codex-fast-home.service}"
 SERVICE_FILE="${CODEX_FAST_HOME_SERVICE:-/etc/systemd/system/${SERVICE_NAME}}"
 CHECK_WINDOWS=1
+REG_EXE="${REG_EXE:-/mnt/c/Windows/System32/reg.exe}"
 
 service_env() {
 	local name="$1"
@@ -93,6 +94,32 @@ print_context() {
 	log "Service file:     $SERVICE_FILE"
 }
 
+windows_cli_path_from_registry() {
+	if [[ ! -x "$REG_EXE" ]]; then
+		return 1
+	fi
+
+	"$REG_EXE" query 'HKCU\Environment' /V CODEX_CLI_PATH 2>/dev/null |
+		tr -d '\r' |
+		sed -n 's/^[[:space:]]*CODEX_CLI_PATH[[:space:]]*REG_[^[:space:]]*[[:space:]]*//p' |
+		tail -n 1
+}
+
+windows_path_to_wsl() {
+	local path="$1"
+	local drive rest lower_drive
+
+	if [[ "$path" =~ ^([A-Za-z]):\\(.*)$ ]]; then
+		drive="${BASH_REMATCH[1]}"
+		rest="${BASH_REMATCH[2]}"
+		lower_drive="$(printf '%s' "$drive" | tr '[:upper:]' '[:lower:]')"
+		printf '/mnt/%s/%s\n' "$lower_drive" "${rest//\\//}"
+		return 0
+	fi
+
+	return 1
+}
+
 needs_repair=0
 print_context
 
@@ -130,6 +157,19 @@ elif command -v systemctl >/dev/null 2>&1; then
 fi
 
 if [[ "$CHECK_WINDOWS" -eq 1 ]]; then
+	if cli_path="$(windows_cli_path_from_registry)"; then
+		if [[ "$cli_path" =~ ^[A-Za-z]:\\Users\\[^\\]+\\.codex\\bin\\wsl\\[^\\]+\\codex$ ]]; then
+			if cli_path_wsl="$(windows_path_to_wsl "$cli_path")"; then
+				if [[ -x "$cli_path_wsl" ]]; then
+					log "OK: CODEX_CLI_PATH target exists and is executable through WSL bind: $cli_path_wsl"
+				else
+					log "FAIL: CODEX_CLI_PATH target is missing or not executable through WSL bind: $cli_path_wsl"
+					needs_repair=1
+				fi
+			fi
+		fi
+	fi
+
 	if command -v codex-fast-home-windows >/dev/null 2>&1; then
 		if codex-fast-home-windows --check; then
 			log "OK: Windows-side Codex Desktop WSL agent setting is enforced."

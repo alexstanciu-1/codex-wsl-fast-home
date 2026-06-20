@@ -44,8 +44,9 @@ This patched version keeps the original idea but changes the operational behavio
 - `codex-fast-home-ensure` provides a preflight guard for startup races where Codex starts before the service finishes.
 - A separate `codex-fast-home-reset` tool performs deliberate recovery: stop `Codex.exe`, unmount expected bind mounts, back up both sides, and mount again.
 - `codex-fast-home-reset --import-windows-additions` explicitly imports Windows-side files that do not already exist in the fast mirror.
-- `codex-fast-home-doctor` checks for the common post-update failure mode where Codex recreated the real Windows `.codex` directory, and `codex-fast-home-doctor --repair` runs the reset workflow for you.
-- `codex-fast-home-windows` uses Windows PowerShell from WSL to enforce Codex Desktop's WSL agent setting and to check whether a known integrated-terminal setting is present.
+- `codex-fast-home-reset` always imports missing Desktop-managed WSL CLI cache binaries from the real Windows `.codex\bin\wsl` directory and marks cached `codex` binaries executable in the fast mirror.
+- `codex-fast-home-doctor` checks for common post-update failure modes: Codex recreated the real Windows `.codex` directory, or the user `CODEX_CLI_PATH` registry value still points at an old Desktop-managed WSL binary hash. `codex-fast-home-doctor --repair` runs the reset workflow for you.
+- `codex-fast-home-windows` uses Windows PowerShell from WSL to enforce Codex Desktop's WSL agent setting, to check whether a known integrated-terminal setting is present, and to update stale Desktop-managed `CODEX_CLI_PATH` values.
 
 ## Install
 
@@ -182,6 +183,12 @@ The doctor checks:
 - Whether the fast store exists.
 - Whether the systemd service file is present and enabled.
 - Whether the Windows Codex config has WSL agent mode enabled.
+- Whether user `CODEX_CLI_PATH` points at the newest available Desktop-managed
+  WSL binary when it is set to a `%USERPROFILE%\.codex\bin\wsl\<cache-hash>\codex`
+  path.
+- Whether that `CODEX_CLI_PATH` target also exists and is executable through the
+  WSL bind path, which catches the case where Windows has a new hash but the fast
+  mirror does not yet have the files.
 
 To repair the common post-update case in one command:
 
@@ -191,7 +198,9 @@ sudo codex-fast-home-doctor --repair
 
 That runs the same careful reset flow even when the current mount looks healthy:
 stop Codex, unmount only expected bind mounts, ensure both directories exist,
-back up both stores, and remount the fast store.
+back up both stores, import missing Desktop-managed WSL binaries from the real
+Windows `.codex`, mark cached `codex` binaries executable, update stale
+Desktop-managed `CODEX_CLI_PATH` values, and remount the fast store.
 
 If Codex created new Windows-side files while the mount was missing and you want
 to keep files that do not already exist in the fast store:
@@ -262,6 +271,12 @@ reg query HKCU\Environment /V CODEX_CLI_PATH
 If the final registry query reports that the value does not exist, the manual
 override has been removed.
 
+`codex-fast-home-windows --check` now detects this override when it points at a
+Desktop-managed WSL cache hash. If the path is missing or older than the newest
+cached Desktop-managed `codex` binary, `codex-fast-home-doctor --repair` updates
+the user registry value and imports the missing cached binary files into the fast
+mirror.
+
 ## Manual recovery / reset
 
 Use this when Codex crashes or the bind mount needs to be cleaned up and reapplied:
@@ -277,7 +292,9 @@ The reset tool:
 3. Refuses to unmount unexpected mount sources.
 4. Recreates missing Windows and fast-store directories.
 5. Backs up both the real Windows `.codex` and the fast mirror to `/home/<wsl-user>/codex-backups`.
-6. Mounts the fast mirror once and verifies the result.
+6. Imports missing Desktop-managed WSL CLI cache binaries from the real Windows `.codex\bin\wsl` directory.
+7. Marks cached `codex` binaries executable in the fast mirror.
+8. Mounts the fast mirror once and verifies the result.
 
 To explicitly import files created on the Windows side while WSL was down:
 

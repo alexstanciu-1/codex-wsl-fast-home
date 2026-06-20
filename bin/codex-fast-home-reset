@@ -40,6 +40,34 @@ log() {
 	echo "[codex-fast-home-reset] $*"
 }
 
+sync_desktop_wsl_bins() {
+	local source_bins="$WIN_CODEX_HOME/bin/wsl"
+	local target_bins="$FAST_CODEX_HOME/bin/wsl"
+
+	if [[ ! -d "$source_bins" ]]; then
+		log "No Windows-side Desktop WSL binary cache found at $source_bins."
+		return
+	fi
+
+	log "Importing missing Desktop-managed WSL binaries without overwriting..."
+	install -d -o "$OWNER_USER" -g "$OWNER_GROUP" -m 0775 "$target_bins"
+	rsync -a --ignore-existing --chown="$OWNER_USER:$OWNER_GROUP" \
+		"$source_bins"/ \
+		"$target_bins"/
+}
+
+chmod_desktop_wsl_bins() {
+	local target_bins="$FAST_CODEX_HOME/bin/wsl"
+
+	if [[ ! -d "$target_bins" ]]; then
+		return
+	fi
+
+	log "Ensuring Desktop-managed WSL codex binaries are executable..."
+	find "$target_bins" -type f -name codex -exec chmod 0755 {} +
+	chown -R "$OWNER_USER:$OWNER_GROUP" "$target_bins"
+}
+
 usage() {
 	cat <<'USAGE'
 Usage: codex-fast-home-reset [--import-windows-additions]
@@ -131,6 +159,9 @@ if [[ "$IMPORT_WINDOWS_ADDITIONS" -eq 1 ]]; then
 else
 	log "Skipping Windows import. Use --import-windows-additions to merge missing Windows-side files."
 fi
+
+sync_desktop_wsl_bins
+chmod_desktop_wsl_bins
 
 log "Mounting fast mirror..."
 mount --bind "$FAST_CODEX_HOME" "$WIN_CODEX_HOME"

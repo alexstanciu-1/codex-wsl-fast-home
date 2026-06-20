@@ -26,6 +26,8 @@ Checked:
   - wsl.exe is available on Windows
   - the default WSL distribution responds
   - known integrated-terminal settings, when present, point at WSL
+  - CODEX_CLI_PATH, when set to a Desktop-managed WSL cache path, points at
+    the newest available cached codex binary
 
 Options:
   --check          Report current state without modifying config.
@@ -198,6 +200,88 @@ function Get-CodexExe {
 	return $null
 }
 
+function Get-LatestDesktopWslCodex {
+	param([string]$ConfigPath)
+
+	$codexHome = Split-Path -Parent $ConfigPath
+	$wslBinRoot = Join-Path $codexHome "bin\wsl"
+	if (-not (Test-Path -LiteralPath $wslBinRoot)) {
+		return $null
+	}
+
+	$candidates = Get-ChildItem -LiteralPath $wslBinRoot -Recurse -File -Filter codex -ErrorAction SilentlyContinue |
+		Sort-Object LastWriteTimeUtc, Length -Descending
+	if (-not $candidates) {
+		return $null
+	}
+
+	return $candidates[0].FullName
+}
+
+function Test-SamePath {
+	param(
+		[string]$Left,
+		[string]$Right
+	)
+
+	return [string]::Equals($Left.TrimEnd([char]'\'), $Right.TrimEnd([char]'\'), [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Ensure-CodexCliPath {
+	param(
+		[string]$ConfigPath,
+		[bool]$CheckOnly
+	)
+
+	$current = [Environment]::GetEnvironmentVariable("CODEX_CLI_PATH", "User")
+	if ([string]::IsNullOrWhiteSpace($current)) {
+		Write-Step "OK: CODEX_CLI_PATH is not set in the user environment."
+		return
+	}
+
+	$codexHome = Split-Path -Parent $ConfigPath
+	$desktopWslPattern = "^" + [regex]::Escape($codexHome) + "\\bin\\wsl\\[^\\]+\\codex$"
+	if ($current -notmatch $desktopWslPattern) {
+		Write-Step "WARN: CODEX_CLI_PATH is set outside the Desktop-managed WSL cache: $current"
+		return
+	}
+
+	$latest = Get-LatestDesktopWslCodex -ConfigPath $ConfigPath
+	if (-not $latest) {
+		Write-Step "FAIL: CODEX_CLI_PATH is set, but no Desktop-managed WSL codex binary was found under $codexHome\bin\wsl."
+		if ($CheckOnly) {
+			exit 1
+		}
+		return
+	}
+
+	if (-not (Test-Path -LiteralPath $current)) {
+		if ($CheckOnly) {
+			Write-Step "FAIL: CODEX_CLI_PATH points at a missing cached WSL binary: $current"
+			Write-Step "Newest available Desktop-managed WSL binary: $latest"
+			exit 1
+		}
+		[Environment]::SetEnvironmentVariable("CODEX_CLI_PATH", $latest, "User")
+		$env:CODEX_CLI_PATH = $latest
+		Write-Step "Updated CODEX_CLI_PATH from missing cached binary to: $latest"
+		return
+	}
+
+	if (-not (Test-SamePath -Left $current -Right $latest)) {
+		if ($CheckOnly) {
+			Write-Step "FAIL: CODEX_CLI_PATH points at an older cached WSL binary: $current"
+			Write-Step "Newest available Desktop-managed WSL binary: $latest"
+			exit 1
+		}
+		[Environment]::SetEnvironmentVariable("CODEX_CLI_PATH", $latest, "User")
+		$env:CODEX_CLI_PATH = $latest
+		Write-Step "Updated CODEX_CLI_PATH to newest Desktop-managed WSL binary: $latest"
+		return
+	}
+
+	Write-Step "OK: CODEX_CLI_PATH points at the newest Desktop-managed WSL binary."
+}
+
 Write-Step "Checking wsl.exe..."
 $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
 if (-not $wsl) {
@@ -239,6 +323,8 @@ if (-not (Test-Path -LiteralPath $ConfigPath)) {
 }
 
 $text = Get-Content -LiteralPath $ConfigPath -Raw
+Ensure-CodexCliPath -ConfigPath $ConfigPath -CheckOnly $CheckOnly
+
 $terminalKeys = @(
 	"defaultIntegratedTerminal",
 	"integratedTerminal",
